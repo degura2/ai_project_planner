@@ -1,513 +1,211 @@
-
-import React, { useEffect, useState, ChangeEvent, useRef, useCallback, useMemo } from 'react';
-import { 
-  ProjectTask, SubStep, EditableExtendedTaskDetails, TaskStatus,
-  SubStepStatus, Attachment, SlideDeck, ActionItem, ActionItemReport, Decision
-} from '../types';
+import React, { useState, useEffect, useRef, ChangeEvent } from 'react';
+import { ProjectTask, EditableExtendedTaskDetails, SubStep, ActionItem, Attachment, SubStepStatus, SlideDeck, Decision } from '../types';
+import { XIcon, PlusCircleIcon, TrashIcon, SubtaskIcon, PaperClipIcon, SparklesIcon, ClipboardDocumentListIcon, LockClosedIcon, LockOpenIcon, ArrowsPointingOutIcon, ArrowsPointingInIcon, PresentationChartBarIcon } from './icons';
+import { generateStepProposals, generateInitialSlideDeck } from '../services/geminiService';
 import LoadingSpinner from './LoadingSpinner';
-import ErrorMessage from './ErrorMessage';
-import { 
-  XIcon, ListIcon, ClockIcon, NotesIcon, ResourcesIcon, ResponsibleIcon,
-  LightBulbIcon, PlusIcon, TrashIcon, SubtaskIcon, RefreshIcon, CheckSquareIcon, SquareIcon, PlusCircleIcon,
-  UndoIcon, RedoIcon, TableCellsIcon, ArrowsPointingOutIcon, ArrowsPointingInIcon, PaperClipIcon, CheckCircleIcon,
-  SparklesIcon, ClipboardDocumentListIcon
-} from './icons'; 
-import FlowConnector from './FlowConnector';
-import { generateStepProposals } from '../services/geminiService';
-import SlideEditorView from './SlideEditorView';
 import ProposalReviewModal from './ProposalReviewModal';
 import ActionItemReportModal from './ActionItemReportModal';
-import MatrixEditor from './MatrixEditor';
-import DecisionModal from './DecisionModal';
 import ActionItemTableModal from './ActionItemTableModal';
+import SlideEditorView from './SlideEditorView';
 import CustomTaskReportModal from './CustomTaskReportModal';
+import DecisionModal from './DecisionModal';
 
-// --- Helper Input Component ---
-const DetailInput: React.FC<{label: string, name: string, value: any, onChange: (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => void, type?: string, placeholder?: string, rows?: number, disabled?: boolean, icon?: React.ReactNode, required?: boolean}> = 
-  ({label, name, value, onChange, type="text", placeholder, rows, disabled=false, icon, required=false}) => (
-  <div className="mb-4">
-    <label htmlFor={name} className="block text-sm font-medium text-slate-700 mb-1 flex items-center">
-      {icon && <span className="mr-1.5 text-slate-500 w-4 h-4">{icon}</span>}
-      {label}
-      {required && <span className="text-red-500 ml-1">*</span>}
-    </label>
-    {type === 'textarea' ? (
-      <textarea id={name} name={name} value={value} onChange={onChange} rows={rows || 3} placeholder={placeholder} disabled={disabled}
-                className="w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm text-slate-900 bg-white placeholder-slate-400 disabled:bg-slate-100"/>
-    ) : (
-      <input type={type} id={name} name={name} value={value} onChange={onChange} placeholder={placeholder} disabled={disabled}
-             className="w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm text-slate-900 bg-white placeholder-slate-400 disabled:bg-slate-100"/>
-    )}
-  </div>
-);
-
-// --- SubStep Card Component ---
-const SubStepCard: React.FC<{ subStep: SubStep; onRemove: () => void; onDragStart: (event: React.DragEvent<HTMLDivElement>, subStepId: string) => void; onClick: () => void; cardRef?: React.RefObject<HTMLDivElement>; isSelected?: boolean; onStartConnection: (subStepId: string, event: React.MouseEvent<HTMLDivElement>) => void; onEndConnection: (subStepId: string) => void; }> = React.memo(({ subStep, onRemove, onDragStart, onClick, cardRef, isSelected, onStartConnection, onEndConnection }) => {
-  const getStatusBorder = (status?: SubStepStatus) => {
-    switch(status) {
-      case SubStepStatus.COMPLETED: return 'border-l-4 border-green-500';
-      case SubStepStatus.IN_PROGRESS: return 'border-l-4 border-blue-500';
-      default: return 'border-l-4 border-slate-300';
-    }
-  }
-
-  const handleMouseDownOnHandle = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.stopPropagation();
-    onStartConnection(subStep.id, e);
-  };
-
-  return (
-    <div ref={cardRef} draggable onDragStart={(e) => onDragStart(e, subStep.id)} onClick={onClick}
-      onMouseUp={(e) => { e.stopPropagation(); onEndConnection(subStep.id); }}
-      className={`substep-card absolute p-2.5 rounded-lg shadow-sm cursor-grab active:cursor-grabbing bg-white border w-48 h-auto min-h-[60px] text-xs flex flex-col justify-between hover:shadow-md transition-all duration-200 ${isSelected ? 'ring-2 ring-blue-500 shadow-lg' : 'border-slate-300'} ${getStatusBorder(subStep.status)}`}
-      style={{ left: subStep.position?.x || 0, top: subStep.position?.y || 0, touchAction: 'none' }}
-    >
-      <div className="flex justify-between items-start text-slate-400 mb-1">
-        <span className="font-mono text-[10px] select-none">ID: ...{subStep.id.slice(-4)}</span>
-         <button onClick={(e) => {e.stopPropagation(); onRemove()}} className="text-red-400 hover:text-red-600 p-0.5" title="サブステップ削除">
-          <TrashIcon className="w-3.5 h-3.5"/>
-        </button>
-      </div>
-      <p className={`mb-1 break-words text-slate-800 ${subStep.status === SubStepStatus.COMPLETED ? 'line-through text-slate-500' : ''}`}>{subStep.text || "クリックして編集"}</p>
-      
-      <div
-          onMouseDown={handleMouseDownOnHandle}
-          className="absolute right-[-5px] top-1/2 -translate-y-1/2 w-3 h-3 bg-blue-500 rounded-full cursor-crosshair hover:scale-125 transition-transform"
-          title="ドラッグして接続"
-        />
-    </div>
-  );
-});
-
-// --- Main Modal Component ---
 interface TaskDetailModalProps {
-  task: ProjectTask | null;
+  task: ProjectTask;
   onClose: () => void;
-  onUpdateTaskCoreInfo: (taskId: string, details: { title: string; description: string; status: TaskStatus }) => void; 
-  onUpdateExtendedDetails: (taskId: string, details: EditableExtendedTaskDetails) => void; 
+  onUpdateTaskCoreInfo: (taskId: string, updates: { title: string; description: string; status: any }) => void;
+  onUpdateExtendedDetails: (taskId: string, details: EditableExtendedTaskDetails) => void;
   generateUniqueId: (prefix: string) => string;
   projectGoal: string;
   targetDate: string;
 }
 
-const TaskDetailModal: React.FC<TaskDetailModalProps> = ({ task, onClose, onUpdateTaskCoreInfo, onUpdateExtendedDetails, generateUniqueId, projectGoal, targetDate }) => {
-  if (!task) return null;
+const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
+  task,
+  onClose,
+  onUpdateTaskCoreInfo,
+  onUpdateExtendedDetails,
+  generateUniqueId,
+  projectGoal,
+  targetDate,
+}) => {
+  const [localTask, setLocalTask] = useState<ProjectTask>(task);
+  const [extendedDetails, setExtendedDetails] = useState<EditableExtendedTaskDetails>(
+    task.extendedDetails || {
+      subSteps: [],
+      resources: '',
+      responsible: '',
+      notes: '',
+      numericalTarget: undefined,
+      dueDate: '',
+      reportDeck: undefined,
+      resourceMatrix: null,
+      attachments: [],
+      decisions: [],
+      subStepCanvasSize: { width: 1200, height: 800 },
+    }
+  );
 
-  // Main state
-  const [editableTask, setEditableTask] = useState(task);
-  const [initialTask, setInitialTask] = useState<ProjectTask>(task);
-  const [focus, setFocus] = useState<'none' | 'info' | 'canvas' | 'details'>('none');
-  
-  // Modal states
-  const [isSlideEditorOpen, setIsSlideEditorOpen] = useState(false);
+  const [isGeneratingProposals, setIsGeneratingProposals] = useState(false);
+  const [proposalError, setProposalError] = useState<string | null>(null);
   const [isProposalModalOpen, setIsProposalModalOpen] = useState(false);
-  const [isActionReportModalOpen, setIsActionReportModalOpen] = useState(false);
-  const [isDecisionModalOpen, setIsDecisionModalOpen] = useState(false);
+  const [proposals, setProposals] = useState<{ title: string; description: string }[]>([]);
+
+  const [selectedActionItem, setSelectedActionItem] = useState<ActionItem | null>(null);
+  const [selectedSubStepForReport, setSelectedSubStepForReport] = useState<{ subStep: SubStep; task: ProjectTask } | null>(null);
+
+  const [isReportEditorOpen, setIsReportEditorOpen] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+
   const [isCustomReportModalOpen, setIsCustomReportModalOpen] = useState(false);
-  const [activeActionItem, setActiveActionItem] = useState<ActionItem | null>(null);
-  const [isActionTableModalOpen, setIsActionTableModalOpen] = useState(false);
+  const [isDecisionModalOpen, setIsDecisionModalOpen] = useState(false);
 
-  // History states
-  const [localHistory, setLocalHistory] = useState<ProjectTask[]>([]);
-  const [localRedoHistory, setLocalRedoHistory] = useState<ProjectTask[]>([]);
+  const [isCanvasExpanded, setIsCanvasExpanded] = useState(false);
+  const [draggedSubStep, setDraggedSubStep] = useState<SubStep | null>(null);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
-  // Loading/Error states
-  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
-  const [planError, setPlanError] = useState<string | null>(null);
-  const [proposals, setProposals] = useState<{title: string, description: string}[]>([]);
-  
-  // Sub-step canvas refs and logic
-  const subStepCanvasRef = useRef<HTMLDivElement>(null);
-  const [subStepCardRefs, setSubStepCardRefs] = useState<Map<string, React.RefObject<HTMLDivElement>>>(new Map());
-  const draggedSubStepIdRef = useRef<string | null>(null);
-  const subStepDragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [selectedSubStepId, setSelectedSubStepId] = useState<string | null>(null);
-  
-  // Attachment refs
-  const taskAttachmentInputRef = useRef<HTMLInputElement>(null);
-  const subStepAttachmentInputRef = useRef<HTMLInputElement>(null);
-
-  // Connection drawing state
-  const [connectingState, setConnectingState] = useState<{ fromId: string; fromPos: { x: number; y: number } } | null>(null);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const [subStepConnectors, setSubStepConnectors] = useState<Array<{id: string, from: {x:number, y:number}, to: {x:number, y:number}, sourceId: string, targetId: string}>>([]);
-
-
-  const isDirty = useMemo(() => JSON.stringify(initialTask) !== JSON.stringify(editableTask), [initialTask, editableTask]);
-  
-  const decisionCounts = useMemo(() => {
-    const decisions = editableTask.extendedDetails?.decisions || [];
-    return {
-        decided: decisions.filter(d => d.status === 'decided').length,
-        undecided: decisions.filter(d => d.status === 'undecided').length
-    };
-  }, [editableTask.extendedDetails?.decisions]);
-
-  // Action Items Checklist ---
-  const ActionItemChecklist: React.FC<{ 
-      items: ActionItem[];
-      onToggle: (itemId: string) => void;
-      onAdd: () => void;
-      onUpdate: (itemId: string, updates: Partial<ActionItem>) => void;
-      onRemove: (itemId: string) => void;
-      onOpenReport: (item: ActionItem) => void;
-  }> = ({ items, onToggle, onAdd, onUpdate, onRemove, onOpenReport }) => {
-    return (
-      <div className="space-y-2 mt-2">
-         <div className="flex justify-between items-center">
-            <h6 className="text-sm font-semibold text-slate-600">アクションアイテム</h6>
-            <button onClick={() => setIsActionTableModalOpen(true)} className="p-1 rounded-full hover:bg-slate-200" title="表形式で表示">
-                <TableCellsIcon className="w-5 h-5 text-slate-500" />
-            </button>
-        </div>
-         <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-              {items.map(item => (
-                  <div key={item.id} className="group bg-slate-50 p-2 rounded-md transition-all border border-transparent hover:border-slate-200">
-                      <div className="flex items-center gap-2">
-                          <button onClick={() => onToggle(item.id)} className="flex-shrink-0">
-                              {item.completed ? <CheckSquareIcon className="w-5 h-5 text-green-600"/> : <SquareIcon className="w-5 h-5 text-slate-400"/>}
-                          </button>
-                          <div className="flex-grow" onDoubleClick={() => onOpenReport(item)}>
-                              <input 
-                                  type="text"
-                                  value={item.text}
-                                  onChange={(e) => onUpdate(item.id, { text: e.target.value })}
-                                  placeholder="アクションアイテム名"
-                                  className={`w-full text-sm bg-transparent outline-none p-1 rounded-sm focus:ring-1 focus:ring-blue-500 focus:bg-white ${item.completed ? 'line-through text-slate-500' : 'text-slate-800'}`}
-                              />
-                          </div>
-                          <button onClick={() => onRemove(item.id)} className="ml-2 text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <TrashIcon className="w-4 h-4" />
-                          </button>
-                      </div>
-                      <div className="pl-7 pt-1.5 flex justify-end items-center gap-4 text-xs text-slate-500">
-                         {item.completed && item.completedDate ? (
-                              <span className="text-xs text-green-600 font-medium flex items-center mr-auto">
-                                  <CheckCircleIcon className="w-4 h-4 mr-1"/>
-                                  完了日: {new Date(item.completedDate + 'T00:00:00Z').toLocaleDateString('ja-JP')}
-                              </span>
-                          ) : (
-                              <div className="mr-auto" /> /* For alignment */
-                          )}
-                          <div className="flex items-center">
-                            <label htmlFor={`responsible-${item.id}`} className="mr-1 flex items-center" title="担当者"><ResponsibleIcon className="w-4 h-4"/></label>
-                            <input
-                                type="text"
-                                id={`responsible-${item.id}`}
-                                value={item.responsible || ''}
-                                onChange={(e) => onUpdate(item.id, { responsible: e.target.value })}
-                                className="bg-transparent border-b border-dotted border-slate-400 outline-none p-0.5 w-24 focus:border-solid focus:border-blue-500 disabled:border-none disabled:text-slate-400"
-                                placeholder="担当者"
-                                disabled={item.completed}
-                            />
-                          </div>
-                          <div className="flex items-center">
-                              <label htmlFor={`due-date-${item.id}`} className="mr-1">期日:</label>
-                              <input
-                                  type="date"
-                                  id={`due-date-${item.id}`}
-                                  value={item.dueDate || ''}
-                                  onChange={(e) => onUpdate(item.id, { dueDate: e.target.value })}
-                                  className="bg-transparent border-b border-dotted border-slate-400 outline-none p-0.5 w-28 focus:border-solid focus:border-blue-500 disabled:border-none disabled:text-slate-400"
-                                  style={{colorScheme: 'light'}}
-                                  title="期日"
-                                  disabled={item.completed}
-                              />
-                          </div>
-                      </div>
-                  </div>
-              ))}
-          </div>
-          <button onClick={onAdd} className="mt-1 text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1">
-              <PlusCircleIcon className="w-4 h-4"/>
-              アイテムを追加
-          </button>
-      </div>
-    );
-  };
-
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setEditableTask(task);
-    setInitialTask(task);
-    setLocalHistory([]);
-    setLocalRedoHistory([]);
+    setLocalTask(task);
+    setExtendedDetails(task.extendedDetails || {
+      subSteps: [],
+      resources: '',
+      responsible: '',
+      notes: '',
+      numericalTarget: undefined,
+      dueDate: '',
+      reportDeck: undefined,
+      resourceMatrix: null,
+      attachments: [],
+      decisions: [],
+      subStepCanvasSize: { width: 1200, height: 800 },
+    });
   }, [task]);
 
-  useEffect(() => {
-    const newRefs = new Map<string, React.RefObject<HTMLDivElement>>();
-    (editableTask.extendedDetails?.subSteps || []).forEach(ss => {
-       if (ss && ss.id) newRefs.set(ss.id, subStepCardRefs.get(ss.id) || React.createRef<HTMLDivElement>());
+  const handleSave = () => {
+    onUpdateTaskCoreInfo(localTask.id, {
+      title: localTask.title,
+      description: localTask.description,
+      status: localTask.status,
     });
-    setSubStepCardRefs(newRefs);
-  }, [editableTask.extendedDetails?.subSteps]);
-
-  const calculateSubStepConnectors = useCallback(() => {
-    if (!subStepCanvasRef.current) {
-        setSubStepConnectors([]);
-        return;
-    }
-    
-    const newConnectors: Array<{id: string, from: {x:number, y:number}, to: {x:number, y:number}, sourceId: string, targetId: string}> = [];
-    (editableTask.extendedDetails?.subSteps || []).forEach(sourceSS => {
-        if (sourceSS?.nextSubStepIds?.length) {
-            const sourceCardElement = subStepCardRefs.get(sourceSS.id)?.current;
-            if (sourceCardElement && sourceSS.position) {
-                const sourcePos = { x: sourceSS.position.x + sourceCardElement.offsetWidth, y: sourceSS.position.y + sourceCardElement.offsetHeight / 2 };
-                sourceSS.nextSubStepIds.forEach(targetId => {
-                    const targetSS = editableTask.extendedDetails?.subSteps.find(t => t.id === targetId);
-                    const targetCardElement = subStepCardRefs.get(targetId)?.current;
-                    if (targetSS && targetCardElement && targetSS.position) {
-                        const targetPos = { x: targetSS.position.x, y: targetSS.position.y + targetCardElement.offsetHeight / 2 };
-                        newConnectors.push({ id: `subconn-${sourceSS.id}-${targetId}`, from: sourcePos, to: targetPos, sourceId: sourceSS.id, targetId: targetId });
-                    }
-                });
-            }
-        }
-    });
-    setSubStepConnectors(newConnectors);
-  }, [editableTask.extendedDetails?.subSteps, subStepCardRefs]);
-
-  useEffect(() => {
-    // Use a timeout to ensure DOM elements are rendered and have dimensions
-    const timer = setTimeout(calculateSubStepConnectors, 100);
-    return () => clearTimeout(timer);
-  }, [calculateSubStepConnectors]);
-
-  const updateEditableTaskWithHistory = useCallback((updater: (task: ProjectTask) => ProjectTask) => {
-    setEditableTask(currentTask => {
-      setLocalHistory(prev => [...prev, currentTask]);
-      setLocalRedoHistory([]);
-      return updater(currentTask);
-    });
-  }, []);
-
-  const updateTask = (updates: Partial<ProjectTask> | ((task: ProjectTask) => Partial<ProjectTask>)) => {
-    updateEditableTaskWithHistory(prev => ({...prev, ...(typeof updates === 'function' ? updates(prev) : updates)}));
+    onUpdateExtendedDetails(localTask.id, extendedDetails);
+    onClose();
   };
 
-  const updateExtended = (updates: Partial<EditableExtendedTaskDetails> | ((details: EditableExtendedTaskDetails) => Partial<EditableExtendedTaskDetails>)) => {
-    updateTask(prev => ({ extendedDetails: { ...prev.extendedDetails!, ...(typeof updates === 'function' ? updates(prev.extendedDetails!) : updates) }}));
+  const updateExtendedDetails = (updates: Partial<EditableExtendedTaskDetails>) => {
+    setExtendedDetails(prev => ({ ...prev, ...updates }));
   };
 
-  const handleLocalUndo = () => {
-    if (localHistory.length === 0) return;
-    const previousState = localHistory[localHistory.length - 1];
-    setLocalHistory(prev => prev.slice(0, -1));
-    setLocalRedoHistory(prev => [editableTask, ...prev]);
-    setEditableTask(previousState);
-  };
-  
-  const handleLocalRedo = () => {
-    if (localRedoHistory.length === 0) return;
-    const nextState = localRedoHistory[0];
-    setLocalRedoHistory(prev => prev.slice(1));
-    setLocalHistory(prev => [...prev, editableTask]);
-    setEditableTask(nextState);
-  };
-
-  const handleInitiateAIPlan = async () => {
-    setIsGeneratingPlan(true);
-    setPlanError(null);
+  const handleGenerateProposals = async () => {
+    setIsGeneratingProposals(true);
+    setProposalError(null);
     try {
-      const result = await generateStepProposals(editableTask);
-      setProposals(result);
+      const newProposals = await generateStepProposals(localTask);
+      setProposals(newProposals);
       setIsProposalModalOpen(true);
-    } catch (err) {
-      setPlanError(err instanceof Error ? err.message : '計画の提案生成に失敗しました。');
+    } catch (error) {
+      setProposalError(error instanceof Error ? error.message : 'ステップ提案の生成に失敗しました。');
     } finally {
-      setIsGeneratingPlan(false);
+      setIsGeneratingProposals(false);
     }
   };
 
-  const handleConfirmProposals = (additions: { newSubSteps: { title: string, description: string }[], newActionItems: { targetSubStepId: string, title: string }[] }) => {
-    updateExtended(d => {
-        const existingSubSteps = d.subSteps || [];
-        const i = existingSubSteps.length;
-
-        const createdSubSteps: SubStep[] = additions.newSubSteps.map((p, index) => ({
-            id: generateUniqueId('sub_ai'),
-            text: p.title,
-            notes: p.description,
-            status: SubStepStatus.NOT_STARTED,
-            actionItems: [],
-            attachments: [],
-            position: { x: 10 + ((i + index) % 4) * 210, y: Math.floor((i + index) / 4) * 90 + 10 },
-        }));
-
-        const updatedSubSteps = existingSubSteps.map(ss => {
-            const itemsToAdd = additions.newActionItems.filter(item => item.targetSubStepId === ss.id);
-            if (itemsToAdd.length === 0) return ss;
-            const newActionItems: ActionItem[] = itemsToAdd.map(item => ({
-                id: generateUniqueId('action_ai'),
-                text: item.title,
-                completed: false,
-            }));
-            return {...ss, actionItems: [...(ss.actionItems || []), ...newActionItems]};
-        });
-
-        return { subSteps: [...updatedSubSteps, ...createdSubSteps] };
+  const handleProposalConfirm = ({ newSubSteps, newActionItems }: { newSubSteps: { title: string; description: string }[], newActionItems: { targetSubStepId: string, title: string }[] }) => {
+    const updatedSubSteps = [...extendedDetails.subSteps];
+    
+    newSubSteps.forEach(proposal => {
+      const newSubStep: SubStep = {
+        id: generateUniqueId('substep'),
+        text: proposal.title,
+        notes: proposal.description,
+        status: SubStepStatus.NOT_STARTED,
+        position: { x: 10, y: updatedSubSteps.length * 90 + 10 },
+        actionItems: [],
+      };
+      updatedSubSteps.push(newSubStep);
     });
+
+    newActionItems.forEach(({ targetSubStepId, title }) => {
+      const targetSubStep = updatedSubSteps.find(ss => ss.id === targetSubStepId);
+      if (targetSubStep) {
+        const newActionItem: ActionItem = {
+          id: generateUniqueId('action'),
+          text: title,
+          completed: false,
+        };
+        targetSubStep.actionItems = [...(targetSubStep.actionItems || []), newActionItem];
+      }
+    });
+
+    updateExtendedDetails({ subSteps: updatedSubSteps });
     setIsProposalModalOpen(false);
   };
 
-  const handleAddSubStep = () => {
-    const i = editableTask.extendedDetails?.subSteps?.length || 0;
-    const newSubStep: SubStep = { id: generateUniqueId('sub_new'), text: "新しいステップ", status: SubStepStatus.NOT_STARTED, actionItems: [], attachments: [], position: { x: 10 + (i % 4) * 210, y: Math.floor(i / 4) * 90 + 10 } };
-    updateExtended(d => ({ subSteps: [...(d.subSteps || []), newSubStep] }));
-    setSelectedSubStepId(newSubStep.id);
-  };
-  
-  const handleUpdateSubStep = useCallback((subStepId: string, updates: Partial<SubStep> | ((ss: SubStep) => Partial<SubStep>)) => {
-     updateExtended(d => ({ subSteps: (d.subSteps || []).map(ss => ss.id === subStepId ? {...ss, ...(typeof updates === 'function' ? updates(ss) : updates)} : ss)}));
-  }, [updateExtended]);
-  
-  const handleRemoveSubStep = useCallback((idToRemove: string) => {
-    setSelectedSubStepId(prev => prev === idToRemove ? null : prev);
-    updateExtended(d => ({ subSteps: (d.subSteps || []).filter(ss => ss.id !== idToRemove).map(ss => ({ ...ss, nextSubStepIds: ss.nextSubStepIds?.filter(id => id !== idToRemove) }))}));
-  }, [updateExtended]);
-
-  const handleAutoLayoutSubSteps = () => {
-    const subSteps = editableTask.extendedDetails?.subSteps;
-    const canvas = subStepCanvasRef.current;
-    if (!subSteps || subSteps.length === 0 || !canvas) return;
-
-    // --- 1. Topological Sort ---
-    const adj = new Map<string, string[]>();
-    const inDegree = new Map<string, number>();
-
-    subSteps.forEach(ss => {
-      adj.set(ss.id, []);
-      inDegree.set(ss.id, 0);
-    });
-
-    subSteps.forEach(ss => {
-      (ss.nextSubStepIds || []).forEach(nextId => {
-        if (adj.has(nextId)) {
-          adj.get(ss.id)!.push(nextId);
-          inDegree.set(nextId, inDegree.get(nextId)! + 1);
-        }
-      });
-    });
-
-    const queue = subSteps.filter(ss => inDegree.get(ss.id) === 0).map(ss => ss.id);
-    const levels: string[][] = [];
-    let visitedCount = 0;
-
-    while (queue.length > 0) {
-      const levelSize = queue.length;
-      const currentLevel: string[] = [];
-      for (let i = 0; i < levelSize; i++) {
-        const u = queue.shift()!;
-        currentLevel.push(u);
-        visitedCount++;
-        (adj.get(u) || []).forEach(v => {
-          inDegree.set(v, inDegree.get(v)! - 1);
-          if (inDegree.get(v)! === 0) queue.push(v);
-        });
-      }
-      levels.push(currentLevel);
-    }
-
-    if (visitedCount < subSteps.length) {
-      const laidOutNodes = new Set(levels.flat());
-      const remainingNodes = subSteps.filter(ss => !laidOutNodes.has(ss.id)).map(ss => ss.id);
-      if (remainingNodes.length > 0) levels.push(remainingNodes);
-    }
-
-    // --- 2. New Layout Logic with Wrapping ---
-    const canvasWidth = canvas.clientWidth;
-    const cardWidth = 192, cardHeight = 76, hSpacing = 60, vSpacing = 20;
-    const newPositions = new Map<string, { x: number; y: number }>();
-    
-    let currentX = 10;
-    let currentY = 10;
-    let rowMaxHeight = 0;
-
-    levels.forEach((levelNodes) => {
-      const columnWidth = cardWidth + hSpacing;
-      const columnHeight = levelNodes.length * (cardHeight + vSpacing) - vSpacing;
-      
-      if (currentX > 10 && currentX + columnWidth > canvasWidth) {
-        currentX = 10;
-        currentY += rowMaxHeight + vSpacing * 2;
-        rowMaxHeight = 0;
-      }
-      
-      levelNodes.forEach((nodeId, nodeIndexInLevel) => {
-        newPositions.set(nodeId, {
-          x: currentX,
-          y: currentY + nodeIndexInLevel * (cardHeight + vSpacing)
-        });
-      });
-
-      currentX += columnWidth;
-      rowMaxHeight = Math.max(rowMaxHeight, columnHeight);
-    });
-
-    // --- 3. Resize Canvas and Update State ---
-    let requiredWidth = 0;
-    let requiredHeight = 0;
-    newPositions.forEach(pos => {
-      requiredWidth = Math.max(requiredWidth, pos.x + cardWidth);
-      requiredHeight = Math.max(requiredHeight, pos.y + cardHeight);
-    });
-    
-    updateExtended(d => ({ 
-      subSteps: (d.subSteps || []).map(ss => ({ ...ss, position: newPositions.get(ss.id) || ss.position })),
-      subStepCanvasSize: { width: requiredWidth + 20, height: requiredHeight + 20 }
-    }));
-  };
-  
-
-  const handleSubStepDragStart = (event: React.DragEvent<HTMLDivElement>, subStepId: string) => {
-    draggedSubStepIdRef.current = subStepId;
-    const cardRect = event.currentTarget.getBoundingClientRect();
-    subStepDragOffsetRef.current = {
-      x: event.clientX - cardRect.left,
-      y: event.clientY - cardRect.top,
+  const addSubStep = () => {
+    const newSubStep: SubStep = {
+      id: generateUniqueId('substep'),
+      text: '新しいサブステップ',
+      status: SubStepStatus.NOT_STARTED,
+      position: { x: 10, y: extendedDetails.subSteps.length * 90 + 10 },
+      actionItems: [],
     };
-    event.dataTransfer.effectAllowed = 'move';
+    updateExtendedDetails({ subSteps: [...extendedDetails.subSteps, newSubStep] });
   };
 
-  const handleSubStepDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
+  const updateSubStep = (subStepId: string, updates: Partial<SubStep>) => {
+    const updatedSubSteps = extendedDetails.subSteps.map(ss =>
+      ss.id === subStepId ? { ...ss, ...updates } : ss
+    );
+    updateExtendedDetails({ subSteps: updatedSubSteps });
   };
-  
-  const handleSubStepDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    if (!draggedSubStepIdRef.current || !subStepCanvasRef.current) return;
-  
-    const canvasRect = subStepCanvasRef.current.getBoundingClientRect();
-    const draggedCardElement = subStepCardRefs.get(draggedSubStepIdRef.current)?.current;
-    if (!draggedCardElement) return;
-  
-    const cardWidth = draggedCardElement.offsetWidth;
-    const cardHeight = draggedCardElement.offsetHeight;
-  
-    let newX = event.clientX - canvasRect.left - subStepDragOffsetRef.current.x + subStepCanvasRef.current.scrollLeft;
-    let newY = event.clientY - canvasRect.top - subStepDragOffsetRef.current.y + subStepCanvasRef.current.scrollTop;
+
+  const removeSubStep = (subStepId: string) => {
+    const updatedSubSteps = extendedDetails.subSteps.filter(ss => ss.id !== subStepId);
+    updateExtendedDetails({ subSteps: updatedSubSteps });
+  };
+
+  const addActionItem = (subStepId: string) => {
+    const newActionItem: ActionItem = {
+      id: generateUniqueId('action'),
+      text: '新しいアクションアイテム',
+      completed: false,
+    };
     
-    const innerCanvas = subStepCanvasRef.current.querySelector('.substep-inner-canvas') as HTMLDivElement;
-    if (innerCanvas) {
-       newX = Math.max(0, Math.min(newX, innerCanvas.scrollWidth - cardWidth));
-       newY = Math.max(0, Math.min(newY, innerCanvas.scrollHeight - cardHeight));
-    }
-  
-    handleUpdateSubStep(draggedSubStepIdRef.current, { position: { x: newX, y: newY } });
-    draggedSubStepIdRef.current = null;
+    const updatedSubSteps = extendedDetails.subSteps.map(ss =>
+      ss.id === subStepId
+        ? { ...ss, actionItems: [...(ss.actionItems || []), newActionItem] }
+        : ss
+    );
+    updateExtendedDetails({ subSteps: updatedSubSteps });
   };
 
-  const handleOpenActionReport = (item: ActionItem) => {
-    setActiveActionItem(item);
-    setIsActionReportModalOpen(true);
+  const updateActionItem = (subStepId: string, actionItemId: string, updates: Partial<ActionItem>) => {
+    const updatedSubSteps = extendedDetails.subSteps.map(ss =>
+      ss.id === subStepId
+        ? {
+            ...ss,
+            actionItems: (ss.actionItems || []).map(ai =>
+              ai.id === actionItemId ? { ...ai, ...updates } : ai
+            ),
+          }
+        : ss
+    );
+    updateExtendedDetails({ subSteps: updatedSubSteps });
   };
 
-  const handleAttachmentChange = (
-    event: ChangeEvent<HTMLInputElement>,
-    target: 'task' | 'substep'
-  ) => {
+  const removeActionItem = (subStepId: string, actionItemId: string) => {
+    const updatedSubSteps = extendedDetails.subSteps.map(ss =>
+      ss.id === subStepId
+        ? { ...ss, actionItems: (ss.actionItems || []).filter(ai => ai.id !== actionItemId) }
+        : ss
+    );
+    updateExtendedDetails({ subSteps: updatedSubSteps });
+  };
+
+  const handleAttachmentChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -515,444 +213,588 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({ task, onClose, onUpda
     const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
     
     if (file.size > MAX_FILE_SIZE_BYTES) {
-        alert(`ファイルサイズが大きすぎます。${MAX_FILE_SIZE_MB}MB未満のファイルを選択してください。`);
-        if (event.target) event.target.value = '';
-        return;
+      alert(`ファイルサイズが大きすぎます。${MAX_FILE_SIZE_MB}MB未満のファイルを選択してください。`);
+      if (event.target) event.target.value = '';
+      return;
     }
 
     const reader = new FileReader();
     reader.onload = (e) => {
-        if (typeof e.target?.result === 'string') {
-            const newAttachment: Attachment = {
-                id: generateUniqueId('attach'),
-                name: file.name,
-                type: file.type,
-                dataUrl: e.target.result,
-            };
-
-            if (target === 'task') {
-                updateExtended(d => ({ attachments: [...(d.attachments || []), newAttachment] }));
-            } else if (target === 'substep' && selectedSubStepId) {
-                handleUpdateSubStep(selectedSubStepId, ss => ({
-                    attachments: [...(ss.attachments || []), newAttachment]
-                }));
-            }
-        } else {
-            alert('ファイルの読み込みに失敗しました。');
-        }
+      if (typeof e.target?.result === 'string') {
+        const newAttachment: Attachment = {
+          id: generateUniqueId('attach'),
+          name: file.name,
+          type: file.type,
+          dataUrl: e.target.result,
+        };
+        updateExtendedDetails({
+          attachments: [...(extendedDetails.attachments || []), newAttachment],
+        });
+      } else {
+        alert('ファイルの読み込みに失敗しました。');
+      }
     };
     reader.onerror = () => {
       alert('ファイルの読み込み中にエラーが発生しました。');
     };
     reader.readAsDataURL(file);
-    if(event.target) event.target.value = ''; // Reset file input to allow re-uploading the same file
+    if (event.target) event.target.value = '';
   };
-  
-  const handleRemoveAttachment = (id: string, target: 'task' | 'substep') => {
-    if (target === 'task') {
-        updateExtended(d => ({ attachments: d.attachments?.filter(a => a.id !== id) }));
-    } else if (target === 'substep' && selectedSubStepId) {
-        handleUpdateSubStep(selectedSubStepId, ss => ({
-            attachments: ss.attachments?.filter(a => a.id !== id)
-        }));
-    }
-  };
-  
-  // --- Connection Logic ---
 
-  const handleStartConnection = (fromId: string, event: React.MouseEvent<HTMLDivElement>) => {
-    if (!subStepCanvasRef.current) return;
-    const canvasRect = subStepCanvasRef.current.getBoundingClientRect();
-    const fromPos = {
-      x: event.clientX - canvasRect.left + subStepCanvasRef.current.scrollLeft,
-      y: event.clientY - canvasRect.top + subStepCanvasRef.current.scrollTop,
-    };
-    setConnectingState({ fromId, fromPos });
+  const removeAttachment = (attachmentId: string) => {
+    updateExtendedDetails({
+      attachments: extendedDetails.attachments?.filter(a => a.id !== attachmentId),
+    });
   };
-  
-  const handleEndConnection = (targetId: string) => {
-    if (!connectingState) return;
-    const { fromId } = connectingState;
-    if (fromId === targetId) { // No self-connections
-      setConnectingState(null);
+
+  const handleGenerateReport = async () => {
+    if (extendedDetails.reportDeck) {
+      setIsReportEditorOpen(true);
       return;
     }
-    // Add connection
-    handleUpdateSubStep(fromId, (ss) => ({
-      ...ss,
-      nextSubStepIds: Array.from(new Set([...(ss.nextSubStepIds || []), targetId]))
-    }));
-    setConnectingState(null);
-  };
-  
-  const handleDeleteConnection = (sourceId: string, targetId: string) => {
-    handleUpdateSubStep(sourceId, ss => ({
-      ...ss,
-      nextSubStepIds: ss.nextSubStepIds?.filter(id => id !== targetId)
-    }));
+    setIsGeneratingReport(true);
+    setReportError(null);
+    try {
+      const deck = await generateInitialSlideDeck(localTask, projectGoal);
+      updateExtendedDetails({ reportDeck: deck });
+      setIsReportEditorOpen(true);
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'レポートの生成に失敗しました。');
+    } finally {
+      setIsGeneratingReport(false);
+    }
   };
 
-  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!connectingState || !subStepCanvasRef.current) return;
-    const canvasRect = subStepCanvasRef.current.getBoundingClientRect();
-    setMousePos({
-      x: e.clientX - canvasRect.left + subStepCanvasRef.current.scrollLeft,
-      y: e.clientY - canvasRect.top + subStepCanvasRef.current.scrollTop,
+  const handleReportSave = (deck: SlideDeck) => {
+    updateExtendedDetails({ reportDeck: deck });
+  };
+
+  const handleCustomReportGenerated = (deck: SlideDeck) => {
+    updateExtendedDetails({ reportDeck: deck });
+    setIsCustomReportModalOpen(false);
+    setIsReportEditorOpen(true);
+  };
+
+  const handleDecisionsSave = (decisions: Decision[]) => {
+    updateExtendedDetails({ decisions });
+    setIsDecisionModalOpen(false);
+  };
+
+  const handleSubStepDragStart = (subStep: SubStep, event: React.MouseEvent) => {
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    setDraggedSubStep(subStep);
+    setDragOffset({
+      x: event.clientX - rect.left - (subStep.position?.x || 0),
+      y: event.clientY - rect.top - (subStep.position?.y || 0),
     });
+  };
+
+  const handleCanvasMouseMove = (event: React.MouseEvent) => {
+    if (!draggedSubStep || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const newX = Math.max(0, event.clientX - rect.left - dragOffset.x);
+    const newY = Math.max(0, event.clientY - rect.top - dragOffset.y);
+    updateSubStep(draggedSubStep.id, { position: { x: newX, y: newY } });
   };
 
   const handleCanvasMouseUp = () => {
-    if (connectingState) setConnectingState(null); // Cancel connection
+    setDraggedSubStep(null);
   };
 
-  // --- End Connection Logic ---
-
-
-  const handleSaveActionItemReport = (subStepId: string, updatedItem: ActionItem) => {
-    handleUpdateSubStep(subStepId, ss => ({ actionItems: ss.actionItems?.map(item => item.id === updatedItem.id ? updatedItem : item) }));
-    setIsActionReportModalOpen(false);
-    setActiveActionItem(null);
-  };
-  
-  const handleActionItemUpdate = (subStepId: string, itemId: string, updates: Partial<ActionItem>) => {
-    handleUpdateSubStep(subStepId, ss => ({ actionItems: ss.actionItems?.map(item => item.id === itemId ? { ...item, ...updates } : item)}));
-  };
-
-  const handleToggleActionItem = (subStepId: string, itemId: string) => {
-    updateExtended(d => {
-        const newSubSteps = (d.subSteps || []).map(ss => {
-            if (ss.id !== subStepId) return ss;
-            
-            const newActionItems = ss.actionItems?.map(item => {
-                if (item.id !== itemId) return item;
-                const isNowCompleted = !item.completed;
-                return { 
-                    ...item, 
-                    completed: isNowCompleted,
-                    completedDate: isNowCompleted ? new Date().toISOString().split('T')[0] : undefined
-                };
-            });
-            
-            const allCompleted = newActionItems?.every(item => item.completed);
-            const someInProgress = newActionItems?.some(item => item.completed);
-
-            let newStatus = ss.status;
-            if (newActionItems && newActionItems.length > 0) {
-              if (allCompleted) {
-                newStatus = SubStepStatus.COMPLETED;
-              } else if (someInProgress) {
-                newStatus = SubStepStatus.IN_PROGRESS;
-              } else {
-                newStatus = SubStepStatus.NOT_STARTED;
-              }
-            } else {
-              newStatus = SubStepStatus.NOT_STARTED;
-            }
-
-            return { ...ss, actionItems: newActionItems, status: newStatus };
-        });
-        return { subSteps: newSubSteps };
-    });
-  };
-
-  const handleAddActionItem = (subStepId: string) => {
-    handleUpdateSubStep(subStepId, ss => ({ actionItems: [...(ss.actionItems || []), { id: generateUniqueId('action'), text: '新しいアクション', completed: false }] }));
-  };
-  const handleRemoveActionItem = (subStepId: string, itemId: string) => {
-     handleUpdateSubStep(subStepId, ss => ({ actionItems: ss.actionItems?.filter(item => item.id !== itemId) }));
-  };
-  
-  const handleSaveChanges = () => {
-    onUpdateTaskCoreInfo(editableTask.id, { title: editableTask.title, description: editableTask.description, status: editableTask.status! });
-    onUpdateExtendedDetails(editableTask.id, editableTask.extendedDetails!);
-    onClose(); 
-  };
-  
-  const handleReportDeckSave = (deck: SlideDeck) => {
-    updateExtended({ reportDeck: deck });
-  };
-  
-  const handleOpenReportEditor = () => {
-    setIsCustomReportModalOpen(true);
-  };
-  
-  const handleCustomReportGenerated = (deck: SlideDeck) => {
-    updateExtended({ reportDeck: deck });
-    setIsCustomReportModalOpen(false);
-    setIsSlideEditorOpen(true);
-  };
-
-  const handleAttemptClose = () => {
-    if (!isDirty) {
-      onClose();
-      return;
-    }
-    if (window.confirm("変更が保存されていません。現在の変更を破棄してよろしいですか？\n\n・「OK」で変更を破棄して戻る\n・「キャンセル」で編集を続ける（手動で保存できます）")) {
-      onClose();
+  const getStatusColor = (status?: SubStepStatus) => {
+    switch (status) {
+      case SubStepStatus.COMPLETED: return 'border-green-500';
+      case SubStepStatus.IN_PROGRESS: return 'border-blue-500';
+      default: return 'border-slate-400';
     }
   };
 
-  const handleSaveDecisions = (decisions: Decision[]) => {
-      updateExtended({ decisions });
-      setIsDecisionModalOpen(false);
+  const getStatusBgColor = (status?: SubStepStatus) => {
+    switch (status) {
+      case SubStepStatus.COMPLETED: return 'bg-green-50';
+      case SubStepStatus.IN_PROGRESS: return 'bg-blue-50';
+      default: return 'bg-slate-50';
+    }
   };
 
-  const selectedSubStep = editableTask.extendedDetails?.subSteps?.find(ss => ss.id === selectedSubStepId) || null;
-
-  // --- RENDER LOGIC ---
-
-  const renderAttachments = (
-    attachments: Attachment[] | undefined,
-    onRemove: (id: string) => void
-  ) => (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-1 max-h-40 overflow-y-auto p-2 border rounded-md bg-slate-50">
-      {!attachments || attachments.length === 0 ? (
-        <p className="col-span-full text-center text-xs text-slate-400 py-2">添付ファイルはありません</p>
-      ) : (
-        attachments.map(att => (
-          <div key={att.id} className="relative group border rounded-md overflow-hidden bg-white shadow-sm h-20">
-            <a href={att.dataUrl} download={att.name} className="block w-full h-full" aria-label={`Download ${att.name}`}>
-                {att.type.startsWith('image/') ? (
-                  <img src={att.dataUrl} alt={att.name} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full bg-slate-100 flex flex-col items-center justify-center p-1 hover:bg-slate-200">
-                    <PaperClipIcon className="w-8 h-8 text-slate-500" />
-                  </div>
-                )}
-            </a>
-            <div className="absolute bottom-0 w-full bg-black bg-opacity-60 p-1 pointer-events-none">
-               <p className="text-white text-[10px] truncate" title={att.name}>{att.name}</p>
-            </div>
-            <button onClick={() => onRemove(att.id)} className="absolute top-1 right-1 bg-black bg-opacity-70 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-              <TrashIcon className="w-3 h-3" />
-            </button>
-          </div>
-        ))
-      )}
-    </div>
+  const allActionItems = extendedDetails.subSteps.flatMap(ss => 
+    (ss.actionItems || []).map(ai => ({ ...ai, subStepName: ss.text, taskName: localTask.title }))
   );
 
-
-  if (isSlideEditorOpen && editableTask.extendedDetails?.reportDeck) {
-    return <SlideEditorView 
-        tasks={[editableTask]}
-        initialDeck={editableTask.extendedDetails.reportDeck} 
-        onSave={handleReportDeckSave} 
-        onClose={() => setIsSlideEditorOpen(false)} 
-        generateUniqueId={generateUniqueId}
+  if (isReportEditorOpen && extendedDetails.reportDeck) {
+    return (
+      <SlideEditorView
+        tasks={[{ ...localTask, extendedDetails }]}
+        initialDeck={extendedDetails.reportDeck}
+        onSave={handleReportSave}
+        onClose={() => setIsReportEditorOpen(false)}
         projectGoal={projectGoal}
         targetDate={targetDate}
         reportScope="task"
-    />;
-  }
-  
-  if (isProposalModalOpen) {
-    return <ProposalReviewModal proposals={proposals} existingSubSteps={editableTask.extendedDetails?.subSteps || []} onConfirm={handleConfirmProposals} onClose={() => setIsProposalModalOpen(false)} />
-  }
-
-  if (isActionReportModalOpen && activeActionItem && selectedSubStep) {
-    return <ActionItemReportModal 
-        actionItem={activeActionItem}
-        onSave={(updatedItem) => handleSaveActionItemReport(selectedSubStep.id, updatedItem)}
-        onClose={() => setIsActionReportModalOpen(false)}
         generateUniqueId={generateUniqueId}
-    />
+      />
+    );
   }
 
   return (
     <>
-      <div className="min-h-screen bg-slate-100 flex flex-col">
-        <header className="flex-shrink-0 bg-white shadow-md z-10 sticky top-0">
-          <div className="flex items-center justify-between p-4 sm:p-5 w-full max-w-screen-2xl mx-auto">
-            <h3 className="text-lg sm:text-xl font-bold text-slate-800 truncate pr-2">{editableTask.title} - 詳細計画</h3>
-            <div className="flex items-center space-x-2 sm:space-x-4">
-                <button onClick={handleAttemptClose} className="px-3 sm:px-5 py-2 bg-slate-200 text-slate-700 text-sm font-medium rounded-md hover:bg-slate-300">フローに戻る</button>
-                <button onClick={handleSaveChanges} className="px-3 sm:px-5 py-2 bg-blue-600 text-white text-sm font-semibold rounded-md hover:bg-blue-700">計画の変更を保存</button>
-                <button onClick={handleOpenReportEditor} className="px-3 sm:px-5 py-2 bg-purple-600 text-white text-sm font-semibold rounded-md hover:bg-purple-700">
-                    レポート作成
-                </button>
+      <div className="fixed inset-0 bg-black bg-opacity-70 backdrop-blur-sm flex items-center justify-center p-4 z-[50]">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-7xl h-[95vh] flex flex-col">
+          <header className="flex items-center justify-between p-5 border-b border-slate-200 flex-shrink-0">
+            <h3 className="text-xl font-bold text-slate-800">詳細計画</h3>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setIsDecisionModalOpen(true)}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-slate-700 bg-slate-200 rounded-md hover:bg-slate-300"
+              >
+                <ClipboardDocumentListIcon className="w-5 h-5" />
+                決定事項管理
+              </button>
+              <button
+                onClick={() => setIsCustomReportModalOpen(true)}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-white bg-green-600 rounded-md hover:bg-green-700"
+              >
+                <SparklesIcon className="w-5 h-5" />
+                カスタムレポート作成
+              </button>
+              <button
+                onClick={handleGenerateReport}
+                disabled={isGeneratingReport}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-white bg-teal-600 rounded-md hover:bg-teal-700 disabled:bg-slate-400"
+              >
+                {isGeneratingReport ? <LoadingSpinner size="sm" color="border-white" /> : <PresentationChartBarIcon className="w-5 h-5" />}
+                {extendedDetails.reportDeck ? 'レポートを開く' : 'レポート作成'}
+              </button>
+              <button
+                onClick={onClose}
+                className="p-1 rounded-full hover:bg-slate-100"
+                title="閉じる"
+              >
+                <XIcon className="w-6 h-6 text-slate-500" />
+              </button>
+            </div>
+          </header>
+
+          <div className="flex-grow flex overflow-hidden">
+            <div className="w-1/3 p-5 border-r border-slate-200 overflow-y-auto">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">タスクタイトル</label>
+                  <input
+                    type="text"
+                    value={localTask.title}
+                    onChange={(e) => setLocalTask(prev => ({ ...prev, title: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">タスク説明</label>
+                  <textarea
+                    value={localTask.description}
+                    onChange={(e) => setLocalTask(prev => ({ ...prev, description: e.target.value }))}
+                    rows={3}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">必要なリソース</label>
+                  <textarea
+                    value={extendedDetails.resources}
+                    onChange={(e) => updateExtendedDetails({ resources: e.target.value })}
+                    rows={2}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="必要な人員、設備、予算など"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">責任者</label>
+                  <input
+                    type="text"
+                    value={extendedDetails.responsible}
+                    onChange={(e) => updateExtendedDetails({ responsible: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="担当者名"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">期日</label>
+                  <input
+                    type="date"
+                    value={extendedDetails.dueDate || ''}
+                    onChange={(e) => updateExtendedDetails({ dueDate: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">メモ</label>
+                  <textarea
+                    value={extendedDetails.notes}
+                    onChange={(e) => updateExtendedDetails({ notes: e.target.value })}
+                    rows={3}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="追加の詳細や注意事項"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-slate-700">添付ファイル</label>
+                    <button
+                      onClick={() => attachmentInputRef.current?.click()}
+                      className="text-blue-600 hover:text-blue-800 p-1 rounded-full hover:bg-blue-100"
+                      title="ファイルを添付"
+                    >
+                      <PaperClipIcon className="w-5 h-5" />
+                    </button>
+                    <input
+                      type="file"
+                      ref={attachmentInputRef}
+                      onChange={handleAttachmentChange}
+                      className="hidden"
+                      multiple={false}
+                    />
+                  </div>
+                  <div className="space-y-2 max-h-32 overflow-y-auto">
+                    {(extendedDetails.attachments || []).map(attachment => (
+                      <div key={attachment.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-md">
+                        <a
+                          href={attachment.dataUrl}
+                          download={attachment.name}
+                          className="text-sm text-blue-600 hover:underline truncate flex-grow"
+                          title={attachment.name}
+                        >
+                          {attachment.name}
+                        </a>
+                        <button
+                          onClick={() => removeAttachment(attachment.id)}
+                          className="text-red-500 hover:text-red-700 ml-2"
+                          title="削除"
+                        >
+                          <TrashIcon className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {reportError && (
+                  <div className="text-red-600 text-sm bg-red-100 border border-red-400 p-2 rounded-md">
+                    {reportError}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-grow flex flex-col">
+              <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <h4 className="text-lg font-semibold text-slate-800">サブステップ</h4>
+                  <button
+                    onClick={() => setIsCanvasExpanded(!isCanvasExpanded)}
+                    className="p-1 text-slate-600 hover:text-slate-800"
+                    title={isCanvasExpanded ? "縮小表示" : "拡大表示"}
+                  >
+                    {isCanvasExpanded ? <ArrowsPointingInIcon className="w-5 h-5" /> : <ArrowsPointingOutIcon className="w-5 h-5" />}
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleGenerateProposals}
+                    disabled={isGeneratingProposals}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-white bg-purple-600 rounded-md hover:bg-purple-700 disabled:bg-slate-400"
+                  >
+                    {isGeneratingProposals ? <LoadingSpinner size="sm" color="border-white" /> : <SparklesIcon className="w-5 h-5" />}
+                    AI提案
+                  </button>
+                  <button
+                    onClick={addSubStep}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700"
+                  >
+                    <PlusCircleIcon className="w-5 h-5" />
+                    追加
+                  </button>
+                  {allActionItems.length > 0 && (
+                    <button
+                      onClick={() => setSelectedSubStepForReport({ subStep: { id: 'all', text: 'すべて' } as SubStep, task: localTask })}
+                      className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-slate-700 bg-slate-200 rounded-md hover:bg-slate-300"
+                    >
+                      <ClipboardDocumentListIcon className="w-5 h-5" />
+                      一覧表示
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {proposalError && (
+                <div className="mx-4 mt-2 text-red-600 text-sm bg-red-100 border border-red-400 p-2 rounded-md">
+                  {proposalError}
+                </div>
+              )}
+
+              <div className="flex-grow overflow-hidden">
+                {isCanvasExpanded ? (
+                  <div className="fixed inset-0 bg-black bg-opacity-90 z-[60] flex flex-col">
+                    <div className="flex items-center justify-between p-4 bg-slate-800 text-white">
+                      <h3 className="text-lg font-semibold">サブステップ詳細ビュー</h3>
+                      <button
+                        onClick={() => setIsCanvasExpanded(false)}
+                        className="p-2 hover:bg-slate-700 rounded-md"
+                      >
+                        <XIcon className="w-6 h-6" />
+                      </button>
+                    </div>
+                    <div className="flex-grow bg-slate-100 overflow-auto">
+                      {renderSubStepCanvas()}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="h-full overflow-auto bg-slate-50">
+                    {renderSubStepCanvas()}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </header>
 
-        <main className="flex-grow p-4 sm:p-6 overflow-hidden w-full max-w-screen-2xl mx-auto">
-          <div className="flex gap-6 h-full">
-              { /* Panel 1: Task Info */ }
-              <section className={`flex flex-col space-y-4 bg-white p-4 rounded-lg shadow-sm border transition-all duration-300 ease-in-out
-                  ${focus === 'info' ? 'flex-1' :
-                    focus === 'none' ? 'w-[360px] min-w-[360px]' :
-                    'w-0 p-0 m-0 border-0 overflow-hidden opacity-0'}`}>
-                  <div className="flex items-center justify-between border-b pb-2">
-                      <h4 className="text-lg font-semibold text-slate-700 flex items-center"><ListIcon className="w-5 h-5 mr-2 text-purple-600"/>タスク情報</h4>
-                      <button onClick={() => setFocus(focus === 'info' ? 'none' : 'info')} className="p-1 text-slate-500 hover:text-blue-600" title={focus === 'info' ? '元に戻す' : '最大化'}>
-                        {focus === 'info' ? <ArrowsPointingInIcon className="w-5 h-5"/> : <ArrowsPointingOutIcon className="w-5 h-5"/>}
-                      </button>
-                  </div>
-                  <div className="flex-grow overflow-y-auto pr-2">
-                    <DetailInput label="タスクタイトル" name="title" value={editableTask.title} onChange={e => updateTask({title: e.target.value})} required />
-                    <DetailInput label="タスク説明" name="description" value={editableTask.description} onChange={e => updateTask({description: e.target.value})} type="textarea" rows={3} required />
-                    <DetailInput icon={<ResponsibleIcon />} label="担当者/チーム" name="responsible" value={editableTask.extendedDetails!.responsible} onChange={e => updateExtended({responsible: e.target.value})} />
-                    <DetailInput icon={<ClockIcon />} label="このタスクの期日" name="dueDate" type="date" value={editableTask.extendedDetails!.dueDate || ''} onChange={e => updateExtended({dueDate: e.target.value})} />
-                    
-                    <div>
-                      <DetailInput icon={<ResourcesIcon />} label="必要なリソース" name="resources" value={editableTask.extendedDetails!.resources} onChange={e => updateExtended({resources: e.target.value})} type="textarea" />
-                      {editableTask.extendedDetails?.resourceMatrix ? (
-                        <div className="mt-2">
-                          <MatrixEditor
-                            matrixData={editableTask.extendedDetails.resourceMatrix}
-                            onUpdate={newData => updateExtended({ resourceMatrix: newData })}
-                          />
-                        </div>
-                      ) : (
-                        <button onClick={() => updateExtended({ resourceMatrix: { headers: ['購入品', '価格'], rows: [['', '']] } })} className="mt-1 text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1">
-                          <TableCellsIcon className="w-4 h-4" />
-                          マトリクスを追加
-                        </button>
-                      )}
-                    </div>
-
-                    <DetailInput icon={<NotesIcon />} label="備考・詳細メモ" name="notes" value={editableTask.extendedDetails!.notes} onChange={e => updateExtended({notes: e.target.value})} type="textarea" rows={4} />
-                    
-                    <div className="pt-4 border-t mt-4">
-                        <button onClick={() => setIsDecisionModalOpen(true)} className="w-full text-left p-3 bg-cyan-50 hover:bg-cyan-100 rounded-lg text-cyan-800 font-semibold flex justify-between items-center">
-                            <span className="flex items-center gap-2">
-                                <ClipboardDocumentListIcon className="w-5 h-5 text-cyan-600" />
-                                決定事項の管理
-                            </span>
-                            <div className="flex gap-2 text-xs">
-                                <span className="px-2 py-0.5 rounded-full bg-green-200 text-green-800">済: {decisionCounts.decided}</span>
-                                <span className="px-2 py-0.5 rounded-full bg-yellow-200 text-yellow-800">未: {decisionCounts.undecided}</span>
-                            </div>
-                        </button>
-                    </div>
-
-                    <div className="pt-4">
-                        <label className="flex items-center justify-between text-sm font-medium text-slate-700 mb-1">
-                            タスク全体の添付資料
-                            <button onClick={() => taskAttachmentInputRef.current?.click()} className="p-1 hover:bg-slate-100 rounded-full" title="添付ファイルを追加">
-                                <PaperClipIcon className="w-4 h-4 text-slate-600"/>
-                            </button>
-                        </label>
-                        {renderAttachments(editableTask.extendedDetails?.attachments, (id) => handleRemoveAttachment(id, 'task'))}
-                        <input type="file" ref={taskAttachmentInputRef} onChange={(e) => handleAttachmentChange(e, 'task')} className="hidden"/>
-                    </div>
-                    
-                    <div className="pt-4"><h4 className="text-lg font-semibold text-slate-700 mb-3 border-b pb-2 flex items-center"><LightBulbIcon className="w-5 h-5 mr-2 text-yellow-500"/>AIによる自動計画</h4>
-                      <button onClick={handleInitiateAIPlan} disabled={isGeneratingPlan} className="w-full px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md shadow-sm hover:bg-indigo-700 disabled:bg-slate-400">
-                        {isGeneratingPlan ? <LoadingSpinner size="sm" /> : 'AIでサブステップを自動計画'}
-                      </button>
-                      {planError && <div className="mt-2"><ErrorMessage message={planError}/></div>}
-                    </div>
-                  </div>
-              </section>
-              
-              { /* Panel 2: Sub-step Canvas */ }
-              <section className={`flex flex-col space-y-4 min-w-0 transition-all duration-300 ease-in-out
-                  ${focus === 'canvas' ? 'flex-1' :
-                    focus === 'none' ? 'flex-1' :
-                    'hidden'}`}>
-                    <div className="flex items-center justify-between border-b pb-2">
-                      <h4 className="text-lg font-semibold text-slate-700 flex items-center"><SubtaskIcon className="w-5 h-5 mr-2 text-blue-600"/>サブステップ計画</h4>
-                      <div className="flex gap-2 items-center">
-                        <button onClick={handleLocalUndo} disabled={localHistory.length === 0} className="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-md hover:bg-slate-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1" title="元に戻す"><UndoIcon className="w-3 h-3"/></button>
-                        <button onClick={handleLocalRedo} disabled={localRedoHistory.length === 0} className="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-md hover:bg-slate-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1" title="やり直し"><RedoIcon className="w-3 h-3"/></button>
-                        <button onClick={handleAddSubStep} className="text-xs px-2 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 flex items-center gap-1"><PlusIcon className="w-3 h-3"/>追加</button>
-                        <button onClick={handleAutoLayoutSubSteps} className="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded-md hover:bg-slate-300 flex items-center gap-1" title="自動整列"><RefreshIcon className="w-3 h-3"/>整列</button>
-                        <button onClick={() => setFocus(focus === 'canvas' ? 'none' : 'canvas')} className="p-1 text-slate-500 hover:text-blue-600" title={focus === 'canvas' ? '元に戻す' : '最大化'}>
-                            {focus === 'canvas' ? <ArrowsPointingInIcon className="w-5 h-5"/> : <ArrowsPointingOutIcon className="w-5 h-5"/>}
-                        </button>
-                      </div>
-                    </div>
-                    <div ref={subStepCanvasRef} onMouseMove={handleCanvasMouseMove} onMouseUp={handleCanvasMouseUp} onDragOver={handleSubStepDragOver} onDrop={handleSubStepDrop}
-                         className={`substep-canvas relative border rounded-md bg-white p-2 overflow-auto shadow-inner ${focus === 'canvas' ? '' : 'flex-grow'}`}>
-                      <div className="substep-inner-canvas relative" style={{ 
-                        width: `${editableTask.extendedDetails?.subStepCanvasSize?.width || 1200}px`,
-                        height: `${editableTask.extendedDetails?.subStepCanvasSize?.height || 800}px`
-                      }}> 
-                        {(editableTask.extendedDetails?.subSteps || []).map(ss => (ss ? <SubStepCard key={ss.id} subStep={ss} cardRef={subStepCardRefs.get(ss.id)} isSelected={selectedSubStepId === ss.id} onClick={() => setSelectedSubStepId(ss.id)} onRemove={() => handleRemoveSubStep(ss.id)} onDragStart={handleSubStepDragStart} onStartConnection={handleStartConnection} onEndConnection={handleEndConnection} /> : null))}
-                        {subStepConnectors.map(conn => <FlowConnector key={conn.id} from={conn.from} to={conn.to} id={conn.id} onDelete={() => handleDeleteConnection(conn.sourceId, conn.targetId)} />)}
-                        {connectingState && <FlowConnector from={connectingState.fromPos} to={mousePos} id="preview-connector" />}
-                      </div>
-                    </div>
-              </section>
-              
-              { /* Panel 3: Sub-step Details */ }
-              <section className={`flex flex-col space-y-4 bg-white p-4 rounded-lg shadow-sm border transition-all duration-300 ease-in-out
-                  ${focus === 'details' ? 'flex-1' :
-                    focus === 'none' ? 'w-[360px] min-w-[360px]' :
-                    'hidden'}`}>
-                  <div className="flex items-center justify-between border-b pb-2">
-                    <h5 className="text-lg font-semibold text-slate-800">サブステップ詳細</h5>
-                    <button onClick={() => setFocus(focus === 'details' ? 'none' : 'details')} disabled={!selectedSubStep} className="p-1 text-slate-500 hover:text-blue-600 disabled:text-slate-300 disabled:cursor-not-allowed" title={focus === 'details' ? '元に戻す' : '最大化'}>
-                      {focus === 'details' ? <ArrowsPointingInIcon className="w-5 h-5"/> : <ArrowsPointingOutIcon className="w-5 h-5"/>}
-                    </button>
-                  </div>
-                  <div className="flex-grow overflow-y-auto pr-2">
-                      {selectedSubStep ? (
-                        <div className="space-y-4">
-                          <DetailInput label="テキスト" name="text" value={selectedSubStep.text} onChange={(e) => handleUpdateSubStep(selectedSubStep.id, {text: e.target.value})} type="textarea" />
-                          <DetailInput label="担当者" name="responsible" value={selectedSubStep.responsible || ''} onChange={(e) => handleUpdateSubStep(selectedSubStep.id, {responsible: e.target.value})} />
-                          <DetailInput label="期日" name="dueDate" type="date" value={selectedSubStep.dueDate || ''} onChange={(e) => handleUpdateSubStep(selectedSubStep.id, {dueDate: e.target.value})} />
-                          <div><label className="block text-sm font-medium text-slate-700 mb-1">ステータス</label>
-                            <select value={selectedSubStep.status || SubStepStatus.NOT_STARTED} onChange={(e) => handleUpdateSubStep(selectedSubStep.id, {status: e.target.value as SubStepStatus})} className="w-full p-2 border rounded-md text-sm bg-white text-slate-900">
-                              {Object.values(SubStepStatus).map(s => <option key={s} value={s}>{s}</option>)}</select></div>
-                          <DetailInput label="メモ" name="notes" value={selectedSubStep.notes || ''} onChange={(e) => handleUpdateSubStep(selectedSubStep.id, {notes: e.target.value})} type="textarea" />
-                           <ActionItemChecklist 
-                              items={selectedSubStep.actionItems || []}
-                              onToggle={(itemId) => handleToggleActionItem(selectedSubStep.id, itemId)}
-                              onAdd={() => handleAddActionItem(selectedSubStep.id)}
-                              onUpdate={(itemId, updates) => handleActionItemUpdate(selectedSubStep.id, itemId, updates)}
-                              onRemove={(itemId) => handleRemoveActionItem(selectedSubStep.id, itemId)}
-                              onOpenReport={(item) => handleOpenActionReport(item)}
-                          />
-                          <div>
-                            <label className="flex items-center justify-between text-sm font-medium text-slate-700 mb-1">
-                                このサブステップの添付資料
-                                <button onClick={() => subStepAttachmentInputRef.current?.click()} className="p-1 hover:bg-slate-100 rounded-full" title="添付ファイルを追加">
-                                    <PaperClipIcon className="w-4 h-4 text-slate-600"/>
-                                </button>
-                            </label>
-                            {renderAttachments(selectedSubStep.attachments, (id) => handleRemoveAttachment(id, 'substep'))}
-                            <input type="file" ref={subStepAttachmentInputRef} onChange={(e) => handleAttachmentChange(e, 'substep')} className="hidden"/>
-                          </div>
-                      </div>
-                      ) : (
-                      <div className="flex items-center justify-center h-full text-center text-slate-500 text-sm">
-                          <p>左のフローチャートから<br/>サブステップを選択して詳細を編集します。</p>
-                      </div>
-                      )}
-                  </div>
-              </section>
-          </div>
-        </main>
+          <footer className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end space-x-3">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md shadow-sm hover:bg-slate-50"
+            >
+              キャンセル
+            </button>
+            <button
+              onClick={handleSave}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md shadow-sm hover:bg-blue-700"
+            >
+              保存
+            </button>
+          </footer>
+        </div>
       </div>
-      {isDecisionModalOpen && (
-          <DecisionModal
-              task={editableTask}
-              isOpen={isDecisionModalOpen}
-              onClose={() => setIsDecisionModalOpen(false)}
-              onSave={handleSaveDecisions}
-              generateUniqueId={generateUniqueId}
-          />
-      )}
-      {isActionTableModalOpen && selectedSubStep && (
-        <ActionItemTableModal
-            actionItems={selectedSubStep.actionItems || []}
-            subStepName={selectedSubStep.text}
-            taskName={editableTask.title}
-            onClose={() => setIsActionTableModalOpen(false)}
+
+      {isProposalModalOpen && (
+        <ProposalReviewModal
+          proposals={proposals}
+          existingSubSteps={extendedDetails.subSteps}
+          onConfirm={handleProposalConfirm}
+          onClose={() => setIsProposalModalOpen(false)}
         />
       )}
+
+      {selectedActionItem && (
+        <ActionItemReportModal
+          actionItem={selectedActionItem}
+          onSave={(updatedItem) => {
+            const subStep = extendedDetails.subSteps.find(ss =>
+              ss.actionItems?.some(ai => ai.id === updatedItem.id)
+            );
+            if (subStep) {
+              updateActionItem(subStep.id, updatedItem.id, updatedItem);
+            }
+            setSelectedActionItem(null);
+          }}
+          onClose={() => setSelectedActionItem(null)}
+          generateUniqueId={generateUniqueId}
+        />
+      )}
+
+      {selectedSubStepForReport && (
+        <ActionItemTableModal
+          actionItems={selectedSubStepForReport.subStep.id === 'all' ? allActionItems : (selectedSubStepForReport.subStep.actionItems || [])}
+          subStepName={selectedSubStepForReport.subStep.text}
+          taskName={selectedSubStepForReport.task.title}
+          onClose={() => setSelectedSubStepForReport(null)}
+        />
+      )}
+
       {isCustomReportModalOpen && (
         <CustomTaskReportModal
-            task={editableTask}
-            isOpen={isCustomReportModalOpen}
-            onClose={() => setIsCustomReportModalOpen(false)}
-            onReportGenerated={handleCustomReportGenerated}
+          task={{ ...localTask, extendedDetails }}
+          isOpen={isCustomReportModalOpen}
+          onClose={() => setIsCustomReportModalOpen(false)}
+          onReportGenerated={handleCustomReportGenerated}
+        />
+      )}
+
+      {isDecisionModalOpen && (
+        <DecisionModal
+          isOpen={isDecisionModalOpen}
+          onClose={() => setIsDecisionModalOpen(false)}
+          onSave={handleDecisionsSave}
+          task={{ ...localTask, extendedDetails }}
+          generateUniqueId={generateUniqueId}
         />
       )}
     </>
   );
+
+  function renderSubStepCanvas() {
+    return (
+      <div
+        ref={canvasRef}
+        className="relative w-full h-full min-h-[600px] p-4"
+        style={{
+          width: extendedDetails.subStepCanvasSize?.width || 1200,
+          height: extendedDetails.subStepCanvasSize?.height || 800,
+        }}
+        onMouseMove={handleCanvasMouseMove}
+        onMouseUp={handleCanvasMouseUp}
+      >
+        {extendedDetails.subSteps.map((subStep) => (
+          <div
+            key={subStep.id}
+            className={`absolute bg-white rounded-lg shadow-md border-l-4 ${getStatusColor(subStep.status)} ${getStatusBgColor(subStep.status)} p-4 w-80 cursor-move`}
+            style={{
+              left: subStep.position?.x || 0,
+              top: subStep.position?.y || 0,
+            }}
+            onMouseDown={(e) => handleSubStepDragStart(subStep, e)}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <input
+                type="text"
+                value={subStep.text}
+                onChange={(e) => updateSubStep(subStep.id, { text: e.target.value })}
+                className="font-semibold text-slate-800 bg-transparent border-none outline-none flex-grow"
+                onClick={(e) => e.stopPropagation()}
+              />
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeSubStep(subStep.id);
+                }}
+                className="text-red-500 hover:text-red-700 ml-2"
+                title="削除"
+              >
+                <TrashIcon className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2 mb-3">
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-medium text-slate-600">ステータス:</label>
+                <select
+                  value={subStep.status || SubStepStatus.NOT_STARTED}
+                  onChange={(e) => updateSubStep(subStep.id, { status: e.target.value as SubStepStatus })}
+                  className="text-xs border border-slate-300 rounded px-2 py-1"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <option value={SubStepStatus.NOT_STARTED}>未着手</option>
+                  <option value={SubStepStatus.IN_PROGRESS}>進行中</option>
+                  <option value={SubStepStatus.COMPLETED}>完了</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-medium text-slate-600">担当者:</label>
+                <input
+                  type="text"
+                  value={subStep.responsible || ''}
+                  onChange={(e) => updateSubStep(subStep.id, { responsible: e.target.value })}
+                  className="text-xs border border-slate-300 rounded px-2 py-1 flex-grow"
+                  placeholder="担当者名"
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-medium text-slate-600">期日:</label>
+                <input
+                  type="date"
+                  value={subStep.dueDate || ''}
+                  onChange={(e) => updateSubStep(subStep.id, { dueDate: e.target.value })}
+                  className="text-xs border border-slate-300 rounded px-2 py-1"
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </div>
+            </div>
+
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium text-slate-600">アクションアイテム</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    addActionItem(subStep.id);
+                  }}
+                  className="text-blue-600 hover:text-blue-800"
+                  title="アクションアイテムを追加"
+                >
+                  <PlusCircleIcon className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {(subStep.actionItems || []).map((actionItem) => (
+                  <div key={actionItem.id} className="flex items-center gap-2 p-1 bg-slate-100 rounded text-xs">
+                    <input
+                      type="checkbox"
+                      checked={actionItem.completed}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        updateActionItem(subStep.id, actionItem.id, { completed: e.target.checked });
+                      }}
+                      className="w-3 h-3"
+                    />
+                    <input
+                      type="text"
+                      value={actionItem.text}
+                      onChange={(e) => updateActionItem(subStep.id, actionItem.id, { text: e.target.value })}
+                      className="flex-grow bg-transparent border-none outline-none"
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <input
+                      type="text"
+                      value={actionItem.responsible || ''}
+                      onChange={(e) => updateActionItem(subStep.id, actionItem.id, { responsible: e.target.value })}
+                      className="w-20 bg-transparent border border-slate-300 rounded px-1 py-0.5 text-xs"
+                      placeholder="担当者"
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedActionItem(actionItem);
+                      }}
+                      className="text-green-600 hover:text-green-800"
+                      title="実施レポート"
+                    >
+                      <SubtaskIcon className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeActionItem(subStep.id, actionItem.id);
+                      }}
+                      className="text-red-500 hover:text-red-700"
+                      title="削除"
+                    >
+                      <TrashIcon className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <textarea
+              value={subStep.notes || ''}
+              onChange={(e) => updateSubStep(subStep.id, { notes: e.target.value })}
+              className="w-full text-xs border border-slate-300 rounded px-2 py-1 resize-none"
+              rows={2}
+              placeholder="メモ..."
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
 };
 
 export default TaskDetailModal;
