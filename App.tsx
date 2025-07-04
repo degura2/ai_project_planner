@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useEffect } from 'react';
 import { 
   ProjectTask, 
@@ -338,7 +337,7 @@ const App: React.FC = () => {
   
   const handleUpdateTaskPosition = (taskId: string, position: { x: number; y: number }) => {
     setTasks(prevTasks =>
-      prevTasks.map(t => (t.id === taskId ? { ...t, position } : t)
+      prevTasks.map(t => (t.id === taskId ? { ...t, position } : t))
     );
   };
 
